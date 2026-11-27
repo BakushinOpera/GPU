@@ -3,22 +3,12 @@
 #include "Window.h"
 #include "Core.h"
 #include "Math.h"
-#include <fstream>
-#include <sstream>
 #include <time.h>
 #include <cmath>
 
 struct PRIM_VERTEX {
 	Vec3 position;
 	Colour colour;
-};
-struct alignas(16) ConstantBuffer1 {
-	float time;
-};
-struct alignas(16) ConstantBuffer2 {
-	float time;
-	float padding[3];
-	Vec4 lights[4];
 };
 
 class ScreenSpaceTriangle {
@@ -86,61 +76,22 @@ public:
 class ScreenPrimitiveToDraw {
 public:
 	ScreenSpaceTriangle prim;
-	ID3DBlob* vertexShader;
-	std::string vertexShaderStr;
-	ID3DBlob* pixelShader;
-	std::string pixelShaderStr;
-	ID3DBlob* status;
-	HRESULT hr;
-	std::stringstream buffer;
-	PSOManager psos;
-	ConstantBuffer constantBuffer;
+	Shaders* shaders;
+	std::string name;
 
-	std::string Read(std::string filename) {
-		std::ifstream file(filename);
-		std::stringstream buffer;
-		buffer << file.rdbuf();
-		return buffer.str();
-	}
-	void init(Core* core) {
-		vertexShaderStr = Read("VertexShader.txt");
-		VS_compiler();
-		pixelShaderStr = Read("PixelShader.txt");
-		PS_compiler();
+	void init(Core* core, PSOManager& psos, Shaders* shader, std::string _name) {
+		shaders = shader;
+		name = _name;
 		prim.init(core);
-		psos.createPSO(core, "Triangle", vertexShader, pixelShader, prim.inputLayoutDesc);
-		constantBuffer.init(core, sizeof(ConstantBuffer1), 2);
+		psos.createPSO(core, name, shaders->vertexShader, shaders->pixelShader, prim.inputLayoutDesc);
 	}
-	void VS_compiler() {
-		hr = D3DCompile(vertexShaderStr.c_str(), strlen(vertexShaderStr.c_str()), NULL,
-			NULL, NULL, "VS", "vs_5_0", 0, 0, &vertexShader, &status);
-		if (FAILED(hr)) {
-			MessageBoxA(NULL, (char*)status->GetBufferPointer(), "Vertex shader compilation failed", 0);
-			exit(0);
-		}
-	}
-	void PS_compiler() {
-		hr = D3DCompile(pixelShaderStr.c_str(), strlen(pixelShaderStr.c_str()), NULL, NULL,
-			NULL, "PS", "ps_5_0", 0, 0, &pixelShader, &status);
-		if (FAILED(hr)) {
-			MessageBoxA(NULL, (char*)status->GetBufferPointer(), "Pixel shader compilation failed", 0);
-			exit(0);
-		}
-	}
-	void draw(Core* core, ConstantBuffer1 *cb) {
+
+	void draw(Core* core, PSOManager& psos, void* data, void* time) {
 		core->beginRenderPass();
-		constantBuffer.update(cb, sizeof(ConstantBuffer1), core->frameIndex());
-		core->getCommandList()->SetGraphicsRootConstantBufferView(1,
-			constantBuffer.getGPUAddress(core->frameIndex()));
-		psos.bind(core, "Triangle");
-		prim.draw(core);
-	}
-	void draw(Core* core, ConstantBuffer2* cb) {
-		core->beginRenderPass();
-		constantBuffer.update(cb, sizeof(ConstantBuffer2), core->frameIndex());
-		core->getCommandList()->SetGraphicsRootConstantBufferView(1,
-			constantBuffer.getGPUAddress(core->frameIndex()));
-		psos.bind(core, "Triangle");
+		shaders->updateConstantBuffers("lights", data);
+		shaders->updateConstantBuffers("time", time);
+		shaders->apply(core);
+		psos.bind(core, name);
 		prim.draw(core);
 	}
 };
@@ -176,40 +127,37 @@ public:
 };
 int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR lpCmdline, int nCmdShow) {
 	Window win;
-	win.create(1024, 1024, "Window", 0, 0);
+	win.create(1024, 768, "Window", 0, 0);
 	Core core;
 	core.init(win.hwnd, win.width, win.height);
 
-	ScreenPrimitiveToDraw prim;
-	prim.init(&core);
+	PSOManager psos;
+	ShadersManager shadersManager;
+	shadersManager.load(&core, "VertexShader", "PixelShader", "Triangle");
+	Shaders& s = shadersManager.get("Triangle");
 
-	ConstantBuffer1 constBufferCPU1;
-	constBufferCPU1.time = 0;
-	ConstantBuffer2 constBufferCPU2;
-	constBufferCPU2.time = 0;
+	ScreenPrimitiveToDraw prim;
+	prim.init(&core, psos, &s, "Triangle");
 
 	Timer timer;
-	float dt = 0;
+	float time = 0;
+	Vec4 lights[4];
+	//std::vector<std::pair<std::string, void*>> list;
 
 	while (1) {
 		core.beginFrame();
 		win.processMessages();
 
-		//prim.draw(&core, &constBufferCPU1);
-		//dt = timer.dt();
-		//constBufferCPU1.time += dt;
-
-		prim.draw(&core, &constBufferCPU2); // lights spinning
-		dt = timer.dt();
-		constBufferCPU2.time += dt;
+		 // lights spinning
+		time += timer.dt();
 
 		for (int i = 0; i < 4; i++) {
-			float angle = constBufferCPU2.time + (i * M_PI / 2.0f);
-			constBufferCPU2.lights[i] = Vec4(1024 / 2.0f + (cosf(angle) * (1024 * 0.3f)),
-											 1024 / 2.0f + (sinf(angle) * (1024 * 0.3f)),
-											 0, 0);
+			float angle = time + (i * M_PI / 2.0f);
+			lights[i] = Vec4(1024 / 2.0f + (cosf(angle) * (768 * 0.3f)),
+							 1024 / 2.0f + (sinf(angle) * (768 * 0.3f)),
+							 0, 0);
 		}
-
+		prim.draw(&core, psos, lights, &time);
 		if (win.keys[VK_ESCAPE] == 1) break;
 		core.finishFrame();
 	}
